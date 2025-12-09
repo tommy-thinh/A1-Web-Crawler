@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+Sitemap: https://tuoitre.vn/sitemaps/index.rss
+Sitemap: https://tuoitre.vn/sitemaps/latest-news.rss
+Disallow: /tim-kiem.htm
+Disallow: /print/
+Disallow: /web_js/login/login_sso.js
+Disallow: /web_js/livesport-signal.js
+Disallow: /mob_js/login/login_sso.js
+Disallow: /mob_js/livesport-signal.js
+Disallow: /ImageView.aspx
+Disallow: /ajax-box-mua-sam/  
