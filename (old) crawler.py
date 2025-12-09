@@ -25,7 +25,7 @@ TIMELINE_MAPPING_FILE = "category_timeline_mapping.json"
 REQUEST_DELAY_SECS = 1.0       # delay between HTTP requests
 COMMENT_REQUEST_DELAY_SECS = 0.5
 
-# Comment API appKey (decoded from the URL you provided)
+# Comment API appKey (decoded from observed network requests)
 COMMENT_APP_KEY = (
     "lHLShlUMAshjvNkHmBzNqERFZammKUXB1DjEuXKfWAwkunzW6fFbfrhP/IG0Xwp7a"
     "PwhwIuucLW1TVC9lzmUoA=="
@@ -56,10 +56,10 @@ logging.basicConfig(
 session = requests.Session()
 session.headers.update({"User-Agent": USER_AGENT})
 
-# Start from page 2 because older posts are more likely to have many comments
+# First timeline page to start from (older pages usually have more comments)
 START_PAGE = 1
 
-# Patterns or exact names to skip
+# Patterns or exact names to skip when downloading images
 IGNORE_IMAGE_PATTERNS = [
     "author_default",
     "avatar",
@@ -75,21 +75,21 @@ IGNORE_IMAGE_PATTERNS = [
 # -----------------------------
 def article_has_category(html: str, target_cat_path: str) -> bool:
     """
-    Return True iff this article really belongs to the target category
+    Return True if this article really belongs to the target category
     (e.g. target_cat_path = '/khoa-hoc.htm').
 
     Priority:
-    1. Use JS variable _ADM_Channel (e.g. '%2Fkhoa-hoc%2Fdetail%2F')
-    2. Fallback to an article-level breadcrumb/category block.
+      1. Use JS variable _ADM_Channel (e.g. '%2Fkhoa-hoc%2Fdetail%2F')
+      2. Fallback to an article-level breadcrumb/category block.
     """
 
-    # First, parse the HTML into BeautifulSoup
+    # Parse HTML into BeautifulSoup
     soup = BeautifulSoup(html, "html.parser")
 
     # Normalize target: '/khoa-hoc.htm' -> 'khoa-hoc'
     target_slug = target_cat_path.strip("/").replace(".htm", "")
 
-    # --- 1) Look for `_ADM_Channel` in <script> tags ---
+    # 1) Try to get category from _ADM_Channel inside <script> tags
     for script in soup.find_all("script"):
         txt = script.string or script.get_text(" ", strip=False)
         if not txt:
@@ -98,11 +98,11 @@ def article_has_category(html: str, target_cat_path: str) -> bool:
         m = re.search(r"_ADM_Channel\s*=\s*'([^']+)'", txt)
         if m:
             # Example value: '%2Fkhoa-hoc%2Fdetail%2F'
-            decoded = unquote(m.group(1))              # '/khoa-hoc/detail/'
+            decoded = unquote(m.group(1))                    # '/khoa-hoc/detail/'
             first_seg = decoded.strip("/").split("/", 1)[0]  # 'khoa-hoc'
             return first_seg == target_slug
 
-    # --- 2) Fallback: article-level category/breadcrumb (NOT global nav) ---
+    # 2) Fallback: article-level category/breadcrumb (not the global header nav)
     cat_link = soup.select_one(
         ".detail-cate a, .detail__category a, .breadcrumb a.active"
     )
@@ -110,20 +110,20 @@ def article_has_category(html: str, target_cat_path: str) -> bool:
         path = urlparse(cat_link["href"]).path
         return path == target_cat_path
 
-    # If we couldn't determine the category, be conservative.
+    # If we can't tell, assume it doesn't match
     return False
+
 
 def get_zone_id_for_article(article_url: str, target_cat_path: str) -> int | None:
     """
     Given an article URL and a target category path (e.g. '/the-gioi.htm'):
 
-    1. Fetch the article HTML.
-    2. Check if the article actually belongs to that category
-       (via article_has_category).
-    3. If yes, call the comment API with pagesize=1 to get at least one comment.
-    4. If the response has a comment with zone_id, return that zone_id.
+      1. Fetch the article HTML.
+      2. Check if the article really belongs to that category.
+      3. If it does, call the comment API with pagesize=1 to grab one comment.
+      4. If the comment contains zone_id, return it.
 
-    Otherwise, return None and let the caller try another article.
+    Returns None if anything fails and lets the caller try another article.
     """
     # Step 1: fetch article page
     article_resp = safe_get(article_url)
@@ -149,7 +149,7 @@ def get_zone_id_for_article(article_url: str, target_cat_path: str) -> int | Non
     base_url = "https://id.tuoitre.vn/api/getlist-comment.api"
     params = {
         "pageindex": 1,
-        "pagesize": 1,          # just need one comment
+        "pagesize": 1,          # only need one comment to read zone_id
         "objId": post_id,
         "objType": 1,
         "objectpopupid": "",
@@ -188,20 +188,19 @@ def get_zone_id_for_article(article_url: str, target_cat_path: str) -> int | Non
     logging.info("zone_id for %s (category %s) is %s", article_url, target_cat_path, zone_id)
     return int(zone_id)
 
+
 def discover_zone_id_for_category(category_url: str, max_articles_to_try: int = 20) -> int | None:
     """
-    Heuristic for discovering timeline id for a category URL, e.g. /the-gioi.htm:
+    Try to discover the timeline id (zone_id) for a category URL, e.g. /the-gioi.htm:
 
-    - Load that category's main page (which may contain mixed-category content).
-    - Extract candidate article links (generic heuristic).
-    - For each candidate, up to max_articles_to_try:
-        * Check if the article actually belongs to THIS category.
-        * If yes and it has comments, read its zone_id from the comment API.
-    - Return the first valid zone_id we find.
+      - Load the category page (which may contain mixed-category content).
+      - Extract candidate article links.
+      - For each candidate, up to max_articles_to_try:
+          + Check that it really belongs to this category.
+          + If it has comments, read zone_id from the comment API.
+      - Return the first valid zone_id we find.
 
-    This protects us from:
-    - Featured posts from other categories on the homepage (e.g., Thời sự
-      article appearing on The giới front page).
+    This avoids using zone_id from featured posts belonging to other categories.
     """
     resp = safe_get(category_url)
     if not resp:
@@ -230,9 +229,7 @@ def discover_zone_id_for_category(category_url: str, max_articles_to_try: int = 
 
         zone_id = get_zone_id_for_article(article_url, target_cat_path)
         if zone_id is not None:
-            # ✅ This zone_id comes from:
-            #    - an article that clearly belongs to this category
-            #    - and has at least one comment
+            # Found a zone_id from an article that belongs to this category and has comments
             return zone_id
 
     logging.warning(
@@ -245,9 +242,10 @@ def discover_zone_id_for_category(category_url: str, max_articles_to_try: int = 
 
 def build_timeline_mapping(category_configs, mapping_file: str = TIMELINE_MAPPING_FILE) -> dict:
     """
-    Build a mapping from category path (e.g. '/thoi-su.htm') to timeline id (e.g. 3),
+    Build a mapping from category path (e.g. '/thoi-su.htm') to timeline id (e.g. 3)
     and save it as JSON.
-    - If mapping_file already exists, just load and return it.
+
+    If mapping_file already exists, load and return it instead.
     """
     if os.path.exists(mapping_file):
         logging.info("Loading existing timeline mapping from %s", mapping_file)
@@ -275,12 +273,15 @@ def build_timeline_mapping(category_configs, mapping_file: str = TIMELINE_MAPPIN
 
 
 def load_timeline_mapping(mapping_file: str = TIMELINE_MAPPING_FILE) -> dict:
+    """
+    Load the category -> timeline mapping from disk.
+    If it does not exist, build a fresh mapping.
+    """
     if not os.path.exists(mapping_file):
         logging.warning("Timeline mapping file %s not found, building a new one.", mapping_file)
         return build_timeline_mapping(CATEGORY_CONFIG, mapping_file)
     with open(mapping_file, "r", encoding="utf-8") as f:
         return json.load(f)
-
 
 
 # -----------------------------
@@ -303,8 +304,7 @@ robots_parser = init_robots_parser()
 
 def can_fetch(url: str) -> bool:
     """
-    Check robots.txt. If robots cannot be read, default to True
-    (but we already have your local copy to be sure it's ok).
+    Check robots.txt. If robots.txt cannot be read, fall back to allowing the request.
     """
     if not robots_parser:
         return True
@@ -319,7 +319,10 @@ def can_fetch(url: str) -> bool:
 # -----------------------------
 
 def safe_get(url: str, params=None, stream: bool = False):
-    """Wrapper around requests.get with robots + sleep + error handling."""
+    """
+    Wrapper around requests.get that respects robots.txt, adds a delay,
+    and catches basic network errors.
+    """
     if not can_fetch(url):
         logging.warning("Blocked by robots.txt: %s", url)
         return None
@@ -334,13 +337,14 @@ def safe_get(url: str, params=None, stream: bool = False):
         logging.warning("Request failed (%s): %s", url, e)
         return None
 
+
 def get_comment_count_only(article_url: str, category_name: str) -> int:
     """
-    Crawl an article just enough to compute its total number of comments,
-    without saving JSON, images, or audio.
+    Fetch an article and count its total number of comments only.
+    No JSON, images or audio are saved.
 
-    Used in the 'search phase' when we already saved (n-1) posts for a category
-    but still haven't found any post with > 20 comments.
+    Used in the search phase when we already stored (n-1) posts
+    but still have not found any post with > 20 comments.
     """
     resp = safe_get(article_url)
     if not resp:
@@ -348,7 +352,7 @@ def get_comment_count_only(article_url: str, category_name: str) -> int:
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Reuse metadata extraction just to get postId; we don't need other fields here.
+    # Reuse metadata extraction to get postId; ignore other fields here.
     meta = extract_article_metadata(soup, article_url, category_name)
     post_id = meta.get("postId") or extract_article_id_from_url(article_url)
     if not post_id:
@@ -360,7 +364,6 @@ def get_comment_count_only(article_url: str, category_name: str) -> int:
     return total_comment_count
 
 
-
 # -----------------------------
 # URL & ID utilities
 # -----------------------------
@@ -369,8 +372,8 @@ ARTICLE_ID_PATTERN = re.compile(r"-([0-9]{10,})\.htm")
 
 def extract_article_id_from_url(url: str):
     """
-    Extract numeric article ID from URL like:
-    https://tuoitre.vn/some-slug-20251206081858265.htm
+    Extract numeric article ID from URLs like:
+      https://tuoitre.vn/some-slug-20251206081858265.htm
     """
     m = ARTICLE_ID_PATTERN.search(url)
     if m:
@@ -389,15 +392,16 @@ def normalize_url(href: str, base: str = BASE_DOMAIN) -> str:
         return href
     return urljoin(base, href)
 
+
 def extract_post_links_from_timeline_html(html: str, category_url: str):
     """
-    Extract article URLs from a /timeline/<zone_id>/trang-N.htm page, but only
-    for the given logical category (e.g. /thoi-su.htm).
+    Extract article URLs from a /timeline/<zone_id>/trang-N.htm page,
+    but only for the given logical category (e.g. /thoi-su.htm).
 
-    Structure (from your trang-1.htm):
+    Structure (from trang-1.htm):
       <div class="box-category-item">
         ...
-        <a class="box-category-category" href="https://tuoitre.vn/thoi-su.htm" ...>Thời sự</a>
+        <a class="box-category-category" href="https://tuoitre.vn/thoi-su.htm">Thời sự</a>
         ...
         <a class="box-category-link-title" data-id="2025..." href="https://tuoitre.vn/...-2025....htm">
           ...
@@ -418,7 +422,7 @@ def extract_post_links_from_timeline_html(html: str, category_url: str):
         cat_href = cat_link["href"]
         cat_path = urlparse(cat_href).path
 
-        # Only keep items whose category link matches the category we're crawling
+        # Only keep items whose category link matches the category we are crawling
         if cat_path != target_cat_path:
             continue
 
@@ -433,17 +437,15 @@ def extract_post_links_from_timeline_html(html: str, category_url: str):
     return sorted(links)
 
 
-
 # -----------------------------
 # Category page parsing
 # -----------------------------
 
 def extract_post_links_from_category_html(html: str, category_url: str):
     """
-    Extract candidate article links from a category page.
-    We don't rely on exact CSS classes; instead we:
-    - find all <a href="...">,
-    - keep ones that look like article URLs (have a long numeric ID + .htm).
+    Extract candidate article links from a category page using a simple heuristic:
+      - scan all <a href="..."> links
+      - keep ones that look like article URLs (long numeric ID before .htm).
     """
     soup = BeautifulSoup(html, "html.parser")
     links = set()
@@ -463,12 +465,12 @@ def extract_post_links_from_category_html(html: str, category_url: str):
 
 def build_category_page_url(base_url: str, page_index: int) -> str:
     """
-    Guess pagination scheme for tuoitre.vn categories.
-    Common pattern:
+    Build the URL for a given category page index.
+
+    Typical pattern:
       thoi-su.htm
       thoi-su/trang-2.htm
       thoi-su/trang-3.htm
-    You can adjust this if needed.
     """
     if page_index == 1:
         return base_url
@@ -487,8 +489,8 @@ def build_category_page_url(base_url: str, page_index: int) -> str:
 
 def extract_article_metadata(soup: BeautifulSoup, article_url: str, category_name: str):
     """
-    Extract title, author, date, and main content from article HTML.
-    This uses heuristics and meta tags; you may refine selectors after testing.
+    Extract title, author, date and main content from the article HTML.
+    Uses a mix of meta tags and common content containers.
     """
     # Title: try <h1>, then og:title
     title_tag = soup.find("h1")
@@ -498,7 +500,7 @@ def extract_article_metadata(soup: BeautifulSoup, article_url: str, category_nam
         og_title = soup.find("meta", attrs={"property": "og:title"})
         title = og_title["content"].strip() if og_title and og_title.get("content") else ""
 
-    # Author: try common patterns
+    # Author: try some common patterns
     author = ""
     author_tag = soup.find(class_=re.compile(r"author", re.IGNORECASE))
     if author_tag:
@@ -508,13 +510,13 @@ def extract_article_metadata(soup: BeautifulSoup, article_url: str, category_nam
         if meta_author and meta_author.get("content"):
             author = meta_author["content"].strip()
 
-    # Date: try meta tags first
+    # Date: prefer meta tags
     date = ""
     meta_date = soup.find("meta", attrs={"property": "article:published_time"})
     if meta_date and meta_date.get("content"):
         date = meta_date["content"].strip()
     else:
-        # fallback: look for an element with class containing "date"
+        # fallback: any element with a "date" class
         date_tag = soup.find(class_=re.compile(r"date", re.IGNORECASE))
         if date_tag:
             date = date_tag.get_text(strip=True)
@@ -541,11 +543,12 @@ def extract_article_metadata(soup: BeautifulSoup, article_url: str, category_nam
         "url": article_url,
     }
 
+
 def build_tts_audio_url(post_id: str, publish_date: str) -> str:
     """
     Construct the TTS audio URL using the fixed pattern:
-    https://tts.mediacdn.vn/YYYY/MM/DD/tuoitre-nu-1-POST_ID.m4a
-    
+      https://tts.mediacdn.vn/YYYY/MM/DD/tuoitre-nu-1-POST_ID.m4a
+
     publish_date must be in format YYYY-MM-DD or YYYY/MM/DD.
     """
     # Normalize publish date
@@ -553,6 +556,7 @@ def build_tts_audio_url(post_id: str, publish_date: str) -> str:
     base = "https://tts.mediacdn.vn"
 
     return f"{base}/{date}/tuoitre-nu-1-{post_id}.m4a"
+
 
 def download_tts_audio(post_id: str, publish_date: str) -> str | None:
     """
@@ -589,9 +593,9 @@ def download_tts_audio(post_id: str, publish_date: str) -> str | None:
 
 def download_images_from_article(soup: BeautifulSoup, post_id: str):
     """
-    Download all <img> inside the main article content, save in ./images/<post_id>/.
-    Keep original filenames if possible.
-    Skip irrelevant site-wide assets (logos, banners, avatars, author's default images...)
+    Download all <img> tags inside the article content and save them under
+    ./images/<post_id>/. Keeps original filenames where possible and skips
+    site-wide assets such as logos, banners, avatars, and default author images.
     """
     image_folder = os.path.join(IMAGES_DIR, post_id)
     os.makedirs(image_folder, exist_ok=True)
@@ -603,7 +607,7 @@ def download_images_from_article(soup: BeautifulSoup, post_id: str):
         if not src:
             continue
 
-        # Skip base64/inlined or useless stuff
+        # Skip base64/inlined images
         if src.startswith("data:"):
             continue
 
@@ -646,22 +650,21 @@ def download_images_from_article(soup: BeautifulSoup, post_id: str):
 
     return image_paths
 
+
 # -----------------------------
 # Reactions for the article
 # -----------------------------
 
 def fetch_article_reactions(post_id: str) -> dict:
     """
-    Use: https://s5.tuoitre.vn/showvote-reaction.htm?newsid=<post_id>&m=viewreact
+    Fetch reactions for an article using:
+      https://s5.tuoitre.vn/showvote-reaction.htm?newsid=<post_id>&m=viewreact
 
-    Response is usually a JSON object like:
+    Typical response:
       {"Success": true, "Data": [{...}, {...}]}
 
-    But sometimes:
-      - Data may be null
-      - Or the whole JSON may not be a dict (HTML error, empty, etc.)
-
-    This function is defensive and returns {} on anything unexpected.
+    Data can also be null, or the response can be an error page.
+    In all unexpected cases, returns {}.
     """
     url = "https://s5.tuoitre.vn/showvote-reaction.htm"
     params = {"newsid": post_id, "m": "viewreact"}
@@ -679,7 +682,7 @@ def fetch_article_reactions(post_id: str) -> dict:
         )
         return {}
 
-    # We expect a dict with a "Data" field. If not dict, bail out.
+    # Expect a dict with "Data". If not, treat as empty.
     if not isinstance(data, dict):
         logging.warning(
             "Unexpected reaction JSON type for post %s: %r",
@@ -688,7 +691,7 @@ def fetch_article_reactions(post_id: str) -> dict:
         return {}
 
     raw_items = data.get("Data")
-    # Data can be null or missing; normalize to empty list
+    # Data can be null or missing; normalize to empty
     if raw_items is None:
         logging.info("Reaction JSON for post %s has Data=None", post_id)
         return {}
@@ -716,15 +719,18 @@ def fetch_article_reactions(post_id: str) -> dict:
 
     return reactions
 
+
 # -----------------------------
 # Comments & replies
 # -----------------------------
 
 def fetch_comments_for_post(post_id: str, pagesize: int = 20, max_pages: int = 100):
     """
-    Use: https://id.tuoitre.vn/api/getlist-comment.api?pageindex=1&pagesize=5&objId=...&objType=1&...&appKey=...
-    The response body is JSON with "Data" as a JSON string of a list of comments.
-    We defensively skip any non-dict or None entries.
+    Fetch comments for a post using:
+      https://id.tuoitre.vn/api/getlist-comment.api?pageindex=1&pagesize=...&objId=...
+
+    The API returns JSON with "Data" as a JSON string containing a list of
+    comment objects. Non-dict or None entries are skipped.
     """
     base_url = "https://id.tuoitre.vn/api/getlist-comment.api"
 
@@ -765,7 +771,7 @@ def fetch_comments_for_post(post_id: str, pagesize: int = 20, max_pages: int = 1
             logging.info("No more comments for post %s at page %d", post_id, page)
             break
 
-        # Extend with whatever we got (can include None / weird stuff)
+        # Append everything we got (can include None / unexpected entries)
         all_raw_comments.extend(comments_page)
 
     # -------------------------
@@ -855,7 +861,7 @@ def fetch_comments_for_post(post_id: str, pagesize: int = 20, max_pages: int = 1
 
 def normalize_publish_date(raw: str) -> str | None:
     """
-    Convert things like '2025-12-04T14:19:57+07:00'
+    Convert timestamps like '2025-12-04T14:19:57+07:00'
     into '2025-12-04' (YYYY-MM-DD).
     """
     if not raw:
@@ -867,17 +873,25 @@ def normalize_publish_date(raw: str) -> str | None:
     if "T" in raw:
         date_part = raw.split("T", 1)[0]  # -> '2025-12-04'
     else:
-        # fallback: take first token as date
+        # Fallback: take first token as date
         date_part = raw.split(" ", 1)[0]
 
-    # Very light sanity check: 'YYYY-MM-DD'
+    # Light sanity check: 'YYYY-MM-DD'
     if len(date_part) == 10 and date_part[4] == "-" and date_part[7] == "-":
         return date_part
 
     return None
 
+
 def crawl_single_article(article_url: str, category_name: str):
-    """Fetch article page + audio + images + reactions + comments."""
+    """
+    Fetch a single article and collect:
+      - metadata
+      - audio URL/file
+      - images
+      - reactions
+      - comments and replies
+    """
     resp = safe_get(article_url)
     if not resp:
         return None, 0
@@ -891,7 +905,7 @@ def crawl_single_article(article_url: str, category_name: str):
         logging.warning("Could not determine postId for article %s", article_url)
         return None, 0
 
-    # 🔊 Audio (deterministic TTS URL)
+    # Audio (deterministic TTS URL)
     publish_date = normalize_publish_date(meta.get("date"))
     audio_local_path = None
     audio_url = None
@@ -905,13 +919,13 @@ def crawl_single_article(article_url: str, category_name: str):
             post_id
         )
 
-    # 🖼 Images
+    # Images
     image_paths = download_images_from_article(soup, post_id)
 
-    # 💬 Reactions (article level)
+    # Reactions (article level)
     vote_reactions = fetch_article_reactions(post_id)
 
-    # 🧵 Comments (and nested replies)
+    # Comments (including nested replies)
     comments, total_comment_count = fetch_comments_for_post(post_id)
 
     post_data = {
@@ -935,6 +949,7 @@ def crawl_single_article(article_url: str, category_name: str):
 
     return post_data, total_comment_count
 
+
 # -----------------------------
 # Per-category crawling logic
 # -----------------------------
@@ -946,23 +961,24 @@ def crawl_category(
     is_last_category: bool,
 ):
     """
-    New logic (global >=20-comment requirement):
+    Category-level crawling with a global constraint on >= 20-comment posts.
 
-    - For EVERY category:
-        * Crawl timeline pages.
-        * Save all posts you retrieve (up to target_posts).
-        * For each saved post, if comment_count >= 20 -> set found_post_with_20_global = True.
+    For every category:
+      - Crawl timeline pages.
+      - Save all posts retrieved (up to target_posts).
+      - If any saved post has >= 20 comments, mark found_post_with_20_global = True.
 
-    - We NO LONGER require ">=20 comments" per category.
+    We no longer require each category to contain a >= 20-comment post.
 
-    - AFTER finishing the normal crawl for this category:
-        * If found_post_with_20_global is already True -> just return.
-        * Else IF this is the LAST category:
-              -> enter a "search mode": continue crawling new posts
-                 (beyond target_posts), do NOT save them,
-                 only save the first one with comment_count >= 20.
+    After finishing the normal crawl for a category:
+      - If found_post_with_20_global is already True, just return.
+      - Otherwise, if this is the last category:
+          * enter a search phase:
+              - keep crawling new posts beyond target_posts
+              - do not save them yet
+              - only fully crawl and save the first one with >= 20 comments.
 
-    - Return (saved_posts, found_post_with_20_global).
+    Returns (saved_posts, found_post_with_20_global).
     """
     category_url = category_cfg["url"]
     target_posts = category_cfg["target_posts"]
@@ -1029,14 +1045,14 @@ def crawl_category(
 
             visited_urls.add(article_url)
 
-            # Crawl + SAVE every post in the normal phase
+            # Crawl and save every post in the normal phase
             post_data, comment_count = crawl_single_article(article_url, cat_name)
             if not post_data:
                 continue
 
             saved_posts.append(post_data)
 
-            # Update GLOBAL flag if this post has >=20 comments
+            # Update global flag if this post has >= 20 comments
             if comment_count is not None and comment_count >= 20:
                 found_post_with_20_global = True
 
@@ -1049,9 +1065,8 @@ def crawl_category(
     )
 
     # -------------------------------
-    # 2) EXTRA SEARCH PHASE (only if):
-    #    - we STILL haven't found any >=20-comment post anywhere
-    #    - and this is the LAST category
+    # 2) EXTRA SEARCH PHASE (last category only)
+    #    - still no >=20-comment post
     # -------------------------------
     if not found_post_with_20_global and is_last_category:
         logging.info(
@@ -1086,13 +1101,13 @@ def crawl_category(
 
                 visited_urls.add(article_url)
 
-                # In SEARCH phase: first, only get comment count (no saving)
+                # In search phase: first, only check comment count (no saving yet)
                 comment_count = get_comment_count_only(article_url, cat_name)
                 if comment_count is None:
                     comment_count = 0
 
                 if comment_count >= 20:
-                    # Now fully crawl and SAVE this one post
+                    # Now fully crawl and save this one post
                     post_data, final_cc = crawl_single_article(article_url, cat_name)
                     if post_data:
                         saved_posts.append(post_data)
@@ -1122,16 +1137,18 @@ def crawl_category(
 
     return saved_posts, found_post_with_20_global
 
+
 # -----------------------------
 # Main entry
 # -----------------------------
 
 def main():
-    # 1) Build or load mapping: category path -> timeline id
+    # Build or load mapping: category path -> timeline id
     timeline_mapping = load_timeline_mapping(TIMELINE_MAPPING_FILE)
 
     all_posts = []
-    found_post_with_20_global = False  # ✅ new global flag
+    # Global flag: whether we already saw a post with >= 20 comments
+    found_post_with_20_global = False
 
     for idx, cfg in enumerate(CATEGORY_CONFIG):
         is_last_category = (idx == len(CATEGORY_CONFIG) - 1)
