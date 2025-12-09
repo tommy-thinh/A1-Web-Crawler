@@ -4,9 +4,9 @@ import time
 
 from bs4 import BeautifulSoup
 
-from .config import COMMENT_APP_KEY, COMMENT_REQUEST_DELAY_SECS
-from .http_utils import safe_get
-from .parsing import extract_article_metadata, extract_article_id_from_url
+from config import COMMENT_APP_KEY, COMMENT_REQUEST_DELAY_SECS
+from http_utils import safe_get
+from parsing import extract_article_metadata, extract_article_id_from_url
 
 
 def fetch_article_reactions(post_id: str) -> dict:

@@ -4,7 +4,7 @@ from urllib import robotparser
 
 import requests
 
-from .config import (
+from config import (
     USER_AGENT,
     ROBOTS_URL,
     REQUEST_DELAY_SECS,

@@ -5,23 +5,23 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
-from .config import (
+from config import (
     CATEGORY_CONFIG,
     TIMELINE_MAPPING_FILE,
     DATA_DIR,
     BASE_DOMAIN,
     START_PAGE,
 )
-from .http_utils import safe_get
-from .parsing import (
+from http_utils import safe_get
+from parsing import (
     extract_article_metadata,
     extract_article_id_from_url,
     normalize_publish_date,
     extract_post_links_from_timeline_html,
 )
-from .timeline_mapping import load_timeline_mapping
-from .media import download_tts_audio, download_images_from_article
-from .social import (
+from timeline_mapping import load_timeline_mapping
+from media import download_tts_audio, download_images_from_article
+from social import (
     fetch_article_reactions,
     fetch_comments_for_post,
     get_comment_count_only,

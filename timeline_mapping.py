@@ -2,12 +2,12 @@ import json
 import logging
 from urllib.parse import urlparse
 
-from .config import (
+from config import (
     CATEGORY_CONFIG,
     TIMELINE_MAPPING_FILE,
 )
-from .http_utils import safe_get
-from .parsing import (
+from http_utils import safe_get
+from parsing import (
     article_has_category,
     extract_post_links_from_category_html,
     extract_article_id_from_url,
@@ -23,8 +23,8 @@ def get_zone_id_for_article(article_url: str, target_cat_path: str) -> int | Non
       3. If yes, call the comment API with pagesize=1 to get at least one comment.
       4. If the response has a comment with zone_id, return that zone_id.
     """
-    from .config import COMMENT_APP_KEY  # avoid circular import
-    from .http_utils import safe_get as _safe_get
+    from config import COMMENT_APP_KEY  # avoid circular import
+    from http_utils import safe_get as _safe_get
 
     article_resp = _safe_get(article_url)
     if not article_resp:

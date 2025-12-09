@@ -4,7 +4,7 @@ from urllib.parse import urljoin, urlparse, unquote
 
 from bs4 import BeautifulSoup
 
-from .config import BASE_DOMAIN
+from config import BASE_DOMAIN
 
 # -----------------------------
 # URL & ID utilities

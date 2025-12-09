@@ -4,9 +4,9 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
-from .config import AUDIO_DIR, IMAGES_DIR, BASE_DOMAIN, IGNORE_IMAGE_PATTERNS
-from .http_utils import safe_get
-from .parsing import normalize_url
+from config import AUDIO_DIR, IMAGES_DIR, BASE_DOMAIN, IGNORE_IMAGE_PATTERNS
+from http_utils import safe_get
+from parsing import normalize_url
 
 
 def build_tts_audio_url(post_id: str, publish_date: str) -> str:
